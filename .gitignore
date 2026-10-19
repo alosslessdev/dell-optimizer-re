@@ -1,0 +1,25 @@
+# Proprietary / large artifacts — must never be committed
+input/
+extract/
+decompiled/
+decompiled_all/
+ghidra/
+work/
+*.exe
+*.dll
+*.msi
+*.cab
+*.sys
+*.7z
+*.zip
+*.tar
+*.tar.*
+*.bin
+smbios*.bin
+*.pdb
+*.ilk
+
+# Local noise
+__pycache__/
+*.pyc
+.DS_Store
