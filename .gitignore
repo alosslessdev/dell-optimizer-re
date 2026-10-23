@@ -12,6 +12,7 @@ work/
 *.sys
 *.7z
 *.zip
+!session-archive/*.zip
 *.tar
 *.tar.*
 *.bin

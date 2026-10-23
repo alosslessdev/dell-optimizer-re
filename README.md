@@ -82,6 +82,12 @@ Docs cite paths such as `decompiled/<Assembly>/<Type>.cs`, `extract/...`, and
 distributed here; the assembly/type/method identifiers are stable and can be found by anyone who
 unpacks the public installer with `tools/unpack_all.sh`.
 
+## Session archive
+
+[session-archive/](session-archive/) holds the sanitized transcript of the reverse-engineering
+session that produced these notes: archive built with the `omp-archive` plugin, with artifacts,
+secrets, absolute paths and decompiled-source excerpts removed.
+
 ## License
 
 * Tooling: MIT (see [LICENSE](LICENSE)).
