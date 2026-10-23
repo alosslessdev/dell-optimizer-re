@@ -28,6 +28,8 @@ physical Dell machine. Everything here is MIT-licensed (see `../LICENSE`, `THIRD
 | `probe_windows.ps1` | `powershell -ExecutionPolicy Bypass -File probe_windows.ps1 [-DumpSmbios smbios.bin]` — identity/SKU/chassis/BIOS, battery, Dell Optimizer presence, gating verdict, optional raw SMBIOS dump | no |
 | `probe_linux.sh` | `sudo bash probe_linux.sh` — DMI, dmidecode + 0xDA analysis, Dell modules/dmesg, `BAT0` attributes, verdict | no |
 | `probe_linux.sh --test-charge 80` | records the current thresholds, sets end=80, tests min-diff, then **restores** | yes (root, auto-restore) |
+| `dell_daci_battery.py` | `sudo python3 dell_daci_battery.py --battery 1 read` — reads mode/start/stop via class-8 DACI; `set --mode M --start S --stop T --apply` writes and reads back | yes for `set --apply` (root) |
+| `test_daci_threshold.sh` | `sudo bash test_daci_threshold.sh --apply` — records, lowers the stop limit by 1, verifies, then **restores**; refuses non-Custom mode or AC offline unless `--force` | yes (root, auto-restore) |
 | `gating_verdict.py` | `python3 gating_verdict.py --product "<name>" --sku <SKU>` — applies the app's vendor/model-ID/CustomerType/SKU rules | no |
 | `parse_smbios_da.py` | `python3 parse_smbios_da.py <dump.bin>` — prints Dell type-0xDA calling-interface tables: supported-commands bitmask, battery tokens, values | no |
 
@@ -37,5 +39,10 @@ physical Dell machine. Everything here is MIT-licensed (see `../LICENSE`, `THIRD
   `SMBiosData` byte array from `root\wmi MSSmBios_RawSMBiosTables`).
 * The Linux probe's `--test-charge` mode uses a `trap` to restore the recorded values even on error.
   Keep AC connected; do not loop writes.
+* `dell_daci_battery.py` is for machines where the 0xDA battery tokens exist but have location `0xffff`,
+  so the normal token path returns `EIO`. It uses the same class-8/select-18/19 path as Dell Optimizer.
+  `test_daci_threshold.sh` is the safe record/write/read-back/restore harness for it.
+* For the patched `dell-laptop` module, install `../patches/dell-laptop-bat1.conf` as
+  `/etc/modprobe.d/dell-laptop-bat1.conf` to select `BAT1`.
 * Windows `-DumpSmbios` may require an elevated shell for the WMI class.
 * Redact service tags/serials before publishing probe output.
