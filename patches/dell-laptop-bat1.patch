@@ -1,0 +1,334 @@
+--- a/drivers/platform/x86/dell/dell-laptop.c
++++ b/drivers/platform/x86/dell/dell-laptop.c
+@@ -104,20 +104,27 @@
+ struct battery_mode_info {
+ 	int token;
+ 	enum power_supply_charge_type charge_type;
++	u8 daci_mode;
+ };
+ 
+ static const struct battery_mode_info battery_modes[] = {
+-	{ BAT_PRI_AC_MODE_TOKEN,   POWER_SUPPLY_CHARGE_TYPE_TRICKLE },
+-	{ BAT_EXPRESS_MODE_TOKEN,  POWER_SUPPLY_CHARGE_TYPE_FAST },
+-	{ BAT_STANDARD_MODE_TOKEN, POWER_SUPPLY_CHARGE_TYPE_STANDARD },
+-	{ BAT_ADAPTIVE_MODE_TOKEN, POWER_SUPPLY_CHARGE_TYPE_ADAPTIVE },
+-	{ BAT_CUSTOM_MODE_TOKEN,   POWER_SUPPLY_CHARGE_TYPE_CUSTOM },
++	{ BAT_PRI_AC_MODE_TOKEN,   POWER_SUPPLY_CHARGE_TYPE_TRICKLE,  3 },
++	{ BAT_EXPRESS_MODE_TOKEN,  POWER_SUPPLY_CHARGE_TYPE_FAST,      2 },
++	{ BAT_STANDARD_MODE_TOKEN, POWER_SUPPLY_CHARGE_TYPE_STANDARD,  1 },
++	{ BAT_ADAPTIVE_MODE_TOKEN, POWER_SUPPLY_CHARGE_TYPE_ADAPTIVE,  4 },
++	{ BAT_CUSTOM_MODE_TOKEN,   POWER_SUPPLY_CHARGE_TYPE_CUSTOM,    5 },
+ };
+ static u32 battery_supported_modes;
++static bool battery_use_daci;
+ 
+ module_param(force_rfkill, bool, 0444);
+ MODULE_PARM_DESC(force_rfkill, "enable rfkill on non whitelisted models");
+ 
++static char *battery_name = "BAT0";
++module_param(battery_name, charp, 0444);
++MODULE_PARM_DESC(battery_name,
++		 "ACPI battery name to expose charge control on (default: BAT0)");
++
+ static const struct dmi_system_id dell_device_table[] __initconst = {
+ 	{
+ 		.ident = "Dell laptop",
+@@ -2176,6 +2183,72 @@
+ 	.default_trigger = "audio-mute",
+ };
+ 
++struct dell_battery_daci_info {
++	u8 mode;
++	u8 start;
++	u8 stop;
++	u32 supported;
++};
++
++/*
++ * Some firmware publishes the battery-mode tokens with location 0xffff,
++ * i.e. the token table is present but token I/O is not implemented.  Those
++ * machines still implement the class-8 DACI calls used by Dell Optimizer.
++ */
++static int dell_battery_daci_read(struct dell_battery_daci_info *info)
++{
++	struct calling_interface_buffer buffer;
++	u32 res2, res3;
++	int ret;
++
++	dell_fill_request(&buffer, (1 << 8) | 3, 0x2C, 0, 0);
++	ret = dell_send_request(&buffer, 8, 18);
++	if (ret)
++		return ret;
++
++	res2 = buffer.output[1];
++	res3 = buffer.output[2];
++
++	info->mode = res2 & 0xff;
++	info->start = (res2 >> 8) & 0xff;
++	info->stop = (res2 >> 16) & 0xff;
++	info->supported = res3;
++
++	return 0;
++}
++
++static int dell_battery_daci_write(u8 mode, u8 start, u8 stop)
++{
++	struct calling_interface_buffer buffer;
++	u32 packed = ((u32)stop << 16) | ((u32)start << 8) | mode;
++
++	dell_fill_request(&buffer, (1 << 8) | 0, packed, 0x2C, 0);
++	return dell_send_request(&buffer, 8, 19);
++}
++
++static int dell_battery_type_to_daci_mode(enum power_supply_charge_type type)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(battery_modes); i++)
++		if (battery_modes[i].charge_type == type)
++			return battery_modes[i].daci_mode;
++
++	return -EINVAL;
++}
++
++static enum power_supply_charge_type
++dell_battery_daci_to_type(u8 mode)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(battery_modes); i++)
++		if (battery_modes[i].daci_mode == mode)
++			return battery_modes[i].charge_type;
++
++	return POWER_SUPPLY_CHARGE_TYPE_UNKNOWN;
++}
++
+ static int dell_battery_set_mode(const u16 tokenid)
+ {
+ 	struct calling_interface_buffer buffer;
+@@ -2229,9 +2302,23 @@
+ static int dell_battery_set_custom_charge_start(int start)
+ {
+ 	struct calling_interface_buffer buffer;
+-	int end;
++	struct dell_battery_daci_info info;
++	int end, ret;
+ 
+ 	start = clamp(start, CHARGE_START_MIN, CHARGE_START_MAX);
++
++	if (battery_use_daci) {
++		ret = dell_battery_daci_read(&info);
++		if (ret)
++			return ret;
++		end = info.stop;
++		if (end < CHARGE_END_MIN)
++			end = CHARGE_END_MAX;
++		if ((end - start) < CHARGE_MIN_DIFF)
++			start = end - CHARGE_MIN_DIFF;
++		return dell_battery_daci_write(5, start, end);
++	}
++
+ 	end = dell_battery_read(BAT_CUSTOM_CHARGE_END);
+ 	if (end < 0)
+ 		return end;
+@@ -2245,9 +2332,23 @@
+ static int dell_battery_set_custom_charge_end(int end)
+ {
+ 	struct calling_interface_buffer buffer;
+-	int start;
++	struct dell_battery_daci_info info;
++	int start, ret;
+ 
+ 	end = clamp(end, CHARGE_END_MIN, CHARGE_END_MAX);
++
++	if (battery_use_daci) {
++		ret = dell_battery_daci_read(&info);
++		if (ret)
++			return ret;
++		start = info.start;
++		if (start < CHARGE_START_MIN)
++			start = CHARGE_START_MIN;
++		if ((end - start) < CHARGE_MIN_DIFF)
++			end = start + CHARGE_MIN_DIFF;
++		return dell_battery_daci_write(5, start, end);
++	}
++
+ 	start = dell_battery_read(BAT_CUSTOM_CHARGE_START);
+ 	if (start < 0)
+ 		return start;
+@@ -2261,9 +2362,19 @@
+ 		struct device_attribute *attr,
+ 		char *buf)
+ {
++	struct dell_battery_daci_info info;
+ 	enum power_supply_charge_type charge_type;
+-	int i;
++	int i, ret;
+ 
++	if (battery_use_daci) {
++		ret = dell_battery_daci_read(&info);
++		if (ret)
++			return ret;
++
++		return power_supply_charge_types_show(dev, battery_supported_modes,
++				dell_battery_daci_to_type(info.mode), buf);
++	}
++
+ 	for (i = 0; i < ARRAY_SIZE(battery_modes); i++) {
+ 		charge_type = battery_modes[i].charge_type;
+ 
+@@ -2285,12 +2396,34 @@
+ 		struct device_attribute *attr,
+ 		const char *buf, size_t size)
+ {
+-	int charge_type, err, i;
++	struct dell_battery_daci_info info;
++	int charge_type, err, i, mode;
+ 
+ 	charge_type = power_supply_charge_types_parse(battery_supported_modes, buf);
+ 	if (charge_type < 0)
+ 		return charge_type;
+ 
++	if (battery_use_daci) {
++		mode = dell_battery_type_to_daci_mode(charge_type);
++		if (mode < 0)
++			return -ENOENT;
++
++		if (mode == 5) {
++			err = dell_battery_daci_read(&info);
++			if (err)
++				return err;
++			if (info.start < CHARGE_START_MIN ||
++			    info.stop > CHARGE_END_MAX)
++				return -EIO;
++			return dell_battery_daci_write(5, info.start, info.stop);
++		}
++
++		err = dell_battery_daci_write(mode, 0, 0);
++		if (err)
++			return err;
++		return size;
++	}
++
+ 	for (i = 0; i < ARRAY_SIZE(battery_modes); i++) {
+ 		if (battery_modes[i].charge_type == charge_type)
+ 			break;
+@@ -2309,11 +2442,19 @@
+ 		struct device_attribute *attr,
+ 		char *buf)
+ {
+-	int start;
++	struct dell_battery_daci_info info;
++	int start, ret;
+ 
+-	start = dell_battery_read(BAT_CUSTOM_CHARGE_START);
+-	if (start < 0)
+-		return start;
++	if (battery_use_daci) {
++		ret = dell_battery_daci_read(&info);
++		if (ret)
++			return ret;
++		start = info.start;
++	} else {
++		start = dell_battery_read(BAT_CUSTOM_CHARGE_START);
++		if (start < 0)
++			return start;
++	}
+ 
+ 	if (start > CHARGE_START_MAX)
+ 		return -EIO;
+@@ -2344,11 +2485,19 @@
+ 		struct device_attribute *attr,
+ 		char *buf)
+ {
+-	int end;
++	struct dell_battery_daci_info info;
++	int end, ret;
+ 
+-	end = dell_battery_read(BAT_CUSTOM_CHARGE_END);
+-	if (end < 0)
+-		return end;
++	if (battery_use_daci) {
++		ret = dell_battery_daci_read(&info);
++		if (ret)
++			return ret;
++		end = info.stop;
++	} else {
++		end = dell_battery_read(BAT_CUSTOM_CHARGE_END);
++		if (end < 0)
++			return end;
++	}
+ 
+ 	if (end > CHARGE_END_MAX)
+ 		return -EIO;
+@@ -2389,8 +2538,7 @@
+ 
+ static bool dell_battery_supported(struct power_supply *battery)
+ {
+-	/* We currently only support the primary battery */
+-	return strcmp(battery->desc->name, "BAT0") == 0;
++	return strcmp(battery->desc->name, battery_name) == 0;
+ }
+ 
+ static int dell_battery_add(struct power_supply *battery,
+@@ -2421,21 +2569,59 @@
+ 
+ static u32 __init battery_get_supported_modes(void)
+ {
++	struct calling_interface_token *token;
++	u32 modes = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(battery_modes); i++) {
++		token = dell_smbios_find_token(battery_modes[i].token);
++		/* 0xffff means "token present but not implemented" */
++		if (token && token->location != 0xffff)
++			modes |= BIT(battery_modes[i].charge_type);
++	}
++
++	return modes;
++}
++
++static u32 __init battery_daci_supported_modes(u32 mask)
++{
+ 	u32 modes = 0;
+ 	int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(battery_modes); i++) {
+-		if (dell_smbios_find_token(battery_modes[i].token))
++		if (mask & BIT(battery_modes[i].daci_mode - 1))
+ 			modes |= BIT(battery_modes[i].charge_type);
+ 	}
+ 
+ 	return modes;
+ }
+ 
++static bool __init battery_daci_probe(void)
++{
++	struct dell_battery_daci_info info;
++	u32 modes;
++
++	if (!dell_smbios_class_is_supported(8))
++		return false;
++
++	if (dell_battery_daci_read(&info))
++		return false;
++
++	modes = battery_daci_supported_modes(info.supported);
++	if (!modes)
++		return false;
++
++	battery_supported_modes = modes;
++	return true;
++}
++
+ static void __init dell_battery_init(struct device *dev)
+ {
+ 	battery_supported_modes = battery_get_supported_modes();
+ 
++	if (battery_supported_modes == 0)
++		battery_use_daci = battery_daci_probe();
++
+ 	if (battery_supported_modes != 0)
+ 		battery_hook_register(&dell_battery_hook);
+ }
