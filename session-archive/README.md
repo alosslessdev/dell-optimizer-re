@@ -4,7 +4,7 @@ Archive of the omp session that produced this repository's analysis
 (`01a11f4e-2cdb-70de-98ce-63fc3c7e27b6`, "Reverse engineer Dell Optimizer battery charge functions").
 
 - `omp-archive-2026-10-09T06-16-19-419Z_01a11f4e-2cdb-70de-98ce-63fc3c7e27b6.zip` — built with the
-  [`omp-archive`](../../../../alosslessdev/omp-archive-main) plugin (`--no-artifacts`), then sanitized.
+  [`omp-archive`](https://github.com/alosslessdev/omp-archive-main) plugin (`--no-artifacts`), then sanitized.
 - `*.sha256` — SHA-256 of the zip.
 
 The archive holds the main session transcript (`session.jsonl`, byte-for-byte apart from redactions),
